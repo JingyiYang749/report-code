@@ -1,0 +1,298 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Merge Data
+
+## Import Library
+
+```{r}
+library(readxl)
+library(tidyverse)
+```
+
+## Merge Data
+
+```{r}
+biomarkers <- read_excel("biomarkers.xlsx", sheet = "NPX (Page 2)")
+covariates <- read_excel("covariates.xlsx", sheet = "Ark1")
+
+# Extract PatientID and TimePoint
+biomarkers <- biomarkers %>%
+  mutate(
+    PatientID = as.numeric(str_extract(Biomarker, "^\\d+")),
+    TimePoint = str_extract(Biomarker, "(0weeks|6weeks|12months)")
+  ) %>%
+  select(-Biomarker)
+
+# Reshape data to wide format
+biomarkers_wide <- biomarkers %>%
+  pivot_wider(
+    names_from = TimePoint,
+    values_from = c('IL-8', 'VEGF-A', 'OPG', 'TGF-beta-1', 'IL-6', 'CXCL9', 'CXCL1', 'IL-18', 'CSF-1')
+  )
+
+
+covariates <- covariates %>%
+  mutate(
+    Gender = ifelse(`Sex (1=male, 2=female)` == 1, 0, 1),   # 0 = Male, 1 = Female
+    Smoker = ifelse(`Smoker (1=yes, 2=no)` == 2, 0, 1) # 0 = No, 1 = Yes
+  ) %>%
+  select(-c(`Smoker (1=yes, 2=no)`),`Sex (1=male, 2=female)`)  # Remove the original Sex variable
+```
+
+```{r}
+# Merge with covariates
+merged_data <- left_join(biomarkers_wide, covariates, by = "PatientID")
+
+# Ensure VAS scores are available
+merged_data <- merged_data %>%
+  filter(!is.na(`VAS-at-inclusion`), !is.na(`Vas-12months`))
+
+merged_data
+```
+
+# Statistical hypothesis testing. The researchers are interested in several questions about the levels of the different biomarkers. For instance: do the levels at inclusion vary between males and females? Do the levels at inclusion vary from those 12 months later? From those 6 weeks later? Do the biomarker levels at inclusion for patients with high VAS $(\geq 5)$ differ from those for patients with low VAS $(<5)$ ? Answering these questions will help the researchers understand how the biomarkers are related to the pathophysiology of the condition. Your task is to: 
+
+## (a) Choose one of these questions (or another similar question of your choice). Note that the researchers want you to answer the question for each biomarker in the material (i.e. "Is there a difference for IL-8? Is there a difference for VEGF-A?" and so on)! Describe the question and why you think it may be of interest.
+
+**Research Question:** Do the levels of biomarkers at inclusion (time 0) vary from those 12 months later?
+
+**Interest Justification:**
+
+Understanding how biomarker levels change over time can provide insights into the progression of the medical condition and the body's response to it. If certain biomarkers show significant changes over 12 months, they might be involved in the healing process or the persistence of pain. Identifying these biomarkers can help in developing targeted therapies and in predicting patient outcomes.
+
+## (b) Formulate the question as hypotheses about parameters of distributions (make sure to describe what your random variables and your distributions are!).
+
+**Random Variables and Distributions**
+
+Let $X_i$ represent the biomarker levels for patient $i$ at inclusion (time 0), and $Y_i$ represent the biomarker levels for the same patient $i$ at 12 months.
+
+Assume that the differences $D_i=Y_i-X_i$ are **independently** and **identically distributed random variables drawn** from a population with mean $\mu_D$ and variance $\sigma_D^2$.
+
+**Hypotheses for Each Biomarker**
+
+- Null Hypothesis $\left(H_0\right)$ : There is no difference in the mean levels of the biomarker between time 0 and 12 months.
+
+$$
+H_0: \mu_D=0
+$$
+
+- Alternative Hypothesis $\left(H_1\right)$ : There is a significant difference in the mean levels of the biomarker between time 0 and 12 months.
+
+$$
+H_1: \mu_D \neq 0
+$$
+
+
+## (c) Perform suitable hypothesis tests to test your hypotheses. Describe which test you used and why. Draw conclusions based on the results of your tests.
+
+```{r}
+# List of biomarkers
+biomarkers_list <- c('IL-8', 'VEGF-A', 'OPG', 'TGF-beta-1', 'IL-6', 'CXCL9', 'CXCL1', 'IL-18', 'CSF-1')
+
+# Initialize results data frame
+test_results <- data.frame(
+  Biomarker = character(),
+  Test = character(),
+  P_Value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (biomarker in biomarkers_list) {
+  # Extract data
+  time0 <- merged_data[[paste0(biomarker, "_0weeks")]]
+  time12 <- merged_data[[paste0(biomarker, "_12months")]]
+  
+  # Remove missing data
+  data <- data.frame(time0, time12) %>% na.omit()
+  
+  # Calculate differences
+  differences <- data$time12 - data$time0
+  
+  # Normality test on differences
+  shapiro_test <- shapiro.test(differences)
+  
+  if (shapiro_test$p.value > 0.05) {
+    # Differences are normally distributed; use paired t-test
+    test <- t.test(data$time0, data$time12, paired = TRUE)
+    test_type <- "Paired t-test"
+  } else {
+    # Use Wilcoxon signed-rank test
+    test <- wilcox.test(data$time0, data$time12, paired = TRUE)
+    test_type <- "Wilcoxon signed-rank test"
+  }
+  
+  # Store results
+  test_results <- test_results %>%
+    add_row(
+      Biomarker = biomarker,
+      Test = test_type,
+      P_Value = test$p.value
+    )
+}
+
+test_results
+```
+
+**Conclustions:**
+
+Biomarkers with p-values less than 0.05 suggest a significant difference in levels between time 0 and 12 months.
+
+Therefore, all biomarkers are significant.
+
+## (d) You will now have performed multiple hypothesis tests.
+
+### i. Describe what the potential problems with multiple testing are. Calculate the probability of making at least one type I error assuming that your tests are independent and that all null hypotheses are true.
+
+**Type I Error Inflation:** Performing multiple statistical tests increases the likelihood of incorrectly rejecting at least one true null hypothesis (false positive).
+
+Calculation of Probability:
+
+- With $\alpha=0.05$ and assuming independence, the probability of making at least one Type I error across $n=9$ tests is:
+
+$$
+P(\text { At least one Type I error })=1-(1-\alpha)^n=1-(1-0.05)^9 \approx 0.3697506
+$$
+
+- There's approximately a 36.97506\% chance of making at least one Type I error.
+
+### ii One common remedy for problems associated with multiple testing is called Bonferroni correction. Search for information about Bonferroni correction online or in books. Describe what it is used for and explain how to use it. Then redo your tests using Bonferroni correction. Draw conclusions based on the results of your Bonferroni-corrected tests.
+
+How to Use It:
+
+Adjust the significance level $(\alpha)$ by dividing it by the number of tests $(n)$ :
+
+$$
+\alpha_{\text {adjusted }}=\frac{\alpha}{n}
+$$
+
+- For $\alpha=0.05$ and $n=9$ :
+
+$$
+\alpha_{\text {adjusted }}=\frac{0.05}{9} \approx 0.0056
+$$
+
+
+```{r}
+# Adjust p-values
+test_results$Adjusted_P_Value <- p.adjust(test_results$P_Value, method = "bonferroni")
+
+# Determine significance after correction
+test_results$Significant <- test_results$Adjusted_P_Value < 0.05
+
+test_results
+```
+
+Therefore, all biomarkers excluding IL-6 are significant.
+
+# Regression modelling. Up until now, it has been difficult to make predictions of how well patients with this medical condition will recover. Your task is to construct a regression model using the 12 -month VAS as the response variable and biomarker levels (at inclusion) and covariates as explanatory variables. 
+
+## (a) Describe your model. Fit the model, but only use data from $80 \%$ of the patients (see part (c) below), and present the fitted parameter values in a table.
+
+**Model Description**
+
+Model Description
+
+- Response Variable: VAS score at 12 months (Vas-12months).
+
+- Explanatory Variables:Biomarker levels at inclusion ( IL-8_0weeks, VEGF-A_0weeks, OPG_0weeks, TGF-beta-1_0weeks,IL-6_0weeks,CXCL9_0weeks,CXCL1_0weeks,IL-18_0weeks,CSF1_0weeks).
+
+- Covariates: Age, Gender $(0=$ Male, $1=$ Female $)$, Smoker $(0=\mathrm{No}, 1=$ Yes $)$.
+
+### Data Split
+
+```{r}
+# Prepare data for regression
+regression_data <- merged_data %>%
+  select(
+    PatientID, `Vas-12months`, `VAS-at-inclusion`, Age, Gender, Smoker,
+    `IL-8_0weeks`, `VEGF-A_0weeks`, `OPG_0weeks`, `TGF-beta-1_0weeks`, `IL-6_0weeks`,
+    `CXCL9_0weeks`, `CXCL1_0weeks`, `IL-18_0weeks`, `CSF-1_0weeks`
+  ) %>%
+  na.omit()
+
+# Split data into training (80%) and test (20%) sets
+patient_ids <- unique(regression_data$PatientID)
+training_ids <- sample(patient_ids, size = 0.8 * length(patient_ids))
+training_data <- regression_data %>% filter(PatientID %in% training_ids)
+test_data <- regression_data %>% filter(!PatientID %in% training_ids)
+
+```
+
+### Fit Model
+
+```{r}
+# Fit the multiple linear regression model
+model <- lm(
+  `Vas-12months` ~ `IL-8_0weeks` + `VEGF-A_0weeks` + `OPG_0weeks` + `TGF-beta-1_0weeks` +
+    `IL-6_0weeks` + `CXCL9_0weeks` + `CXCL1_0weeks` + `IL-18_0weeks` + `CSF-1_0weeks` +
+    Age + Gender + Smoker,
+  data = training_data
+)
+
+# Summarize the model
+summary(model)
+```
+
+## (b) Discuss how well the model fits the data.
+
+**Residual Analysis**
+
+Plotting Diagnostic Plots:
+
+```{r}
+par(mfrow = c(2, 2))
+plot(model)
+```
+
+**Multicollinearity Check**
+
+```{r}
+library(car)
+vif_values <- vif(model)
+
+vif_values
+```
+
+## (c) Use your model to make predictions for the remaining $20 \%$ of the patients. Compare their predicted 12-month VAS to their actual 12-month VAS. Discuss your findings. (This is called an out-of-sample evaluation of the model, as the data used for evaluating the model is different from the data used for fitting the model.)
+
+**Prediction**
+
+```{r}
+# Predict on test data
+predictions <- predict(model, newdata = test_data)
+
+# Combine predictions with actual values
+comparison <- data.frame(
+  PatientID = test_data$PatientID,
+  Actual_VAS = test_data$`Vas-12months`,
+  Predicted_VAS = predictions
+)
+
+# Calculate evaluation metrics
+MAE <- mean(abs(comparison$Actual_VAS - comparison$Predicted_VAS))
+RMSE <- sqrt(mean((comparison$Actual_VAS - comparison$Predicted_VAS)^2))
+
+# Output metrics
+cat("Mean Absolute Error (MAE):", round(MAE, 2), "\n")
+cat("Root Mean Square Error (RMSE):", round(RMSE, 2), "\n")
+
+```
+
+**Visualization**
+
+```{r}
+ggplot(comparison, aes(x = Actual_VAS, y = Predicted_VAS)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = 'red') +
+  labs(x = "Actual VAS Score",
+       y = "Predicted VAS Score") +
+  theme_minimal()
+
+```
+
+## (d) In conclusion, do you think that the model can be useful for predicting the 12-month VAS of patients (and therefore their pain status one year after onset)?
+
